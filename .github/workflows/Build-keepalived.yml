@@ -1,6 +1,6 @@
 name: Build keepalived Package
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
@@ -45,9 +45,6 @@ jobs:
 
       - name: 🔀 Resolve channel, version and build matrix
         id: resolve
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -65,19 +62,13 @@ jobs:
           echo "📡 Detected channel: $CH"
 
           # ---- 2. 版本号 ----
-          # PKG_VERSION 沿用上游;PKG_RELEASE 改为"自 2026-01-01 UTC 起的分钟数",
-          # 单调递增且远大于官方的 r1/r2,保证自建源优先于官方源。
+          # PKG_VERSION / PKG_RELEASE 完全按 Makefile,不做任何修改。
           PKG_VERSION=$(sed -n 's/^PKG_VERSION:=//p' Makefile | head -n1 | tr -d '[:space:]')
-          if [ -z "$PKG_VERSION" ]; then
-            echo "❌ Cannot read PKG_VERSION from Makefile"; exit 1
+          PKG_RELEASE=$(sed -n 's/^PKG_RELEASE:=//p' Makefile | head -n1 | tr -d '[:space:]')
+          if [ -z "$PKG_VERSION" ] || [ -z "$PKG_RELEASE" ]; then
+            echo "❌ Cannot read PKG_VERSION/PKG_RELEASE from Makefile"; exit 1
           fi
 
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            BASE_TS=$(date +%s)
-          else
-            BASE_TS=$(git log -1 --format=%ct)
-          fi
-          PKG_RELEASE=$(( (BASE_TS - 1767225600) / 60 ))
           TAG="v${PKG_VERSION}-r${PKG_RELEASE}"
           echo "🏷️ Version: ${PKG_VERSION}-r${PKG_RELEASE}  (tag: $TAG)"
 
@@ -86,11 +77,7 @@ jobs:
           BUILD_SNAPSHOT=false
 
           if [ "$CH" = "release" ] || [ "$CH" = "both" ]; then
-            if [ "$EVENT" = "workflow_dispatch" ] || ! gh release view "$TAG" >/dev/null 2>&1; then
-              BUILD_RELEASE=true
-            else
-              echo "Release $TAG already exists, skipping release channel."
-            fi
+            BUILD_RELEASE=true
           fi
           if [ "$CH" = "snapshot" ] || [ "$CH" = "both" ]; then
             BUILD_SNAPSHOT=true
@@ -156,20 +143,6 @@ jobs:
             --exclude='/.official_channel' \
             ./ "feed/${PKG_NAME}/"
 
-      - name: 🩹 Patch Makefile with dynamic PKG_RELEASE
-        run: |
-          set -euo pipefail
-          MF="feed/${PKG_NAME}/Makefile"
-          REL="${{ needs.check.outputs.pkg_release }}"
-
-          if ! grep -q '^PKG_RELEASE:=' "$MF"; then
-            echo "❌ PKG_RELEASE not found in $MF"; exit 1
-          fi
-          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${REL}/" "$MF"
-
-          echo "✅ Patched Makefile metadata:"
-          grep -E '^PKG_(VERSION|RELEASE):=' "$MF"
-
       - name: 🧮 Compute ARCH
         run: echo "ARCH=${{ matrix.arch }}-${{ matrix.sdk }}" >> "$GITHUB_ENV"
 
@@ -192,50 +165,17 @@ jobs:
           path: bin/packages/*/${{ env.FEEDNAME }}/${{ env.PKG_NAME }}*.apk
           if-no-files-found: error
 
-  release:
-    name: 3. Release & Deploy ${{ github.repository }}
+  deploy:
+    name: 3. Deploy ${{ github.repository }}
     needs: [check, build]
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🧾 Checkout repo
-        uses: actions/checkout@v7
-
       - name: ⬇️ Download all build artifacts
         uses: actions/download-artifact@v8
         with:
           path: ./release-assets
-
-      - name: 📎 Prepare GitHub Release assets
-        if: needs.check.outputs.build_release == 'true'
-        run: |
-          set -e
-          mkdir -p gh-release
-          # 不同架构的 apk 文件名相同,上传 Release 前加上架构前缀避免重名
-          for d in release-assets/*__release; do
-            [ -d "$d" ] || continue
-            base=$(basename "$d")
-            rest="${base#*__}"
-            arch="${rest%%__*}"
-            for f in "$d"/*.apk; do
-              [ -f "$f" ] || continue
-              cp "$f" "gh-release/${arch}_$(basename "$f")"
-            done
-          done
-          ls -la gh-release
-
-      - name: 🗃️ Create GitHub Release
-        if: needs.check.outputs.build_release == 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.check.outputs.tag_name }}
-          name: Build-${{ needs.check.outputs.tag_name }}
-          files: ./gh-release/*.apk
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🔑 Checkout custom-packages repo
         uses: actions/checkout@v7
@@ -294,28 +234,4 @@ jobs:
             git pull --rebase origin main && \
             git push origin main && break || \
             (echo "Conflict detected, retrying in 5s..." && sleep 5)
-          done
-
-      - name: 🧹 Keep only the latest 3 releases
-        if: needs.check.outputs.build_release == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          KEEP=3
-
-          OLD=$(gh release list --repo "$REPO" --limit 200 \
-                  --json tagName,createdAt \
-                  --jq "sort_by(.createdAt) | reverse | .[${KEEP}:] | .[].tagName")
-
-          if [ -z "$OLD" ]; then
-            echo "Nothing to clean up."
-            exit 0
-          fi
-
-          echo "$OLD" | while read -r tag; do
-            [ -z "$tag" ] && continue
-            echo "🗑️ Deleting release $tag"
-            gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
           done
