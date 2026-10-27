@@ -1,81 +1,15 @@
-From cb2fd53cbe2390388c65fec09163c280ceaec682 Mon Sep 17 00:00:00 2001
+From b0bb6d46df8a9c2dc45d02aefa3e9a3f3b72f3e1 Mon Sep 17 00:00:00 2001
 From: Jackie Han <jackie.han@gmail.com>
-Date: Fri, 23 Oct 2026 10:17:03 +0800
-Subject: [PATCH] keepalived: fix reload_service to honor the enabled toggle
+Date: Tue, 27 Oct 2026 17:33:46 +0800
+Subject: [PATCH] Update reload_service to handle enabled state
 
-reload_service() unconditionally sent a signal to an already
-running instance:
-
-    reload_service() {
-        process_config
-        #SIGHUP is used by keepalived to do init.d reload
-        procd_send_signal keepalived
-    }
-
-This never checked globals.enabled and, more importantly, never
-opened a new procd instance. Only start_service() (invoked via
-the "start" action) does that. So toggling globals.enabled from
-'0' back to '1' through UCI and triggering a reload (as LuCI's
-apply flow does via the registered reload trigger) left the
-service stopped: procd_send_signal has nothing to signal when
-no instance is running, and reload_service() never fell back to
-actually starting one. Only a full "restart" from the command
-line worked, because restart calls start_service() through the
-normal "start" action.
-
-A first attempt at fixing this called "stop" from within
-reload_service() whenever the service should not be running.
-That is wrong too: "stop" deregisters the whole service object
-from procd, including the reload trigger registered in
-service_triggers(). Once stopped that way, procd no longer
-knows "keepalived" exists at all, so no future UCI change is
-ever delivered to it again -- only a manual "start" from the
-command line can bring it back under procd's management.
-
-Rework reload_service() to:
- - keep using the lightweight signal-based reload when an
-   instance is already running and should stay enabled;
- - otherwise call "start" (not "stop", and not start_service()
-   directly). "start" goes through rc.common's rc_procd wrapper
-   (procd_open_service/procd_close_service), which is required
-   for procd to actually register the service and its trigger;
-   calling start_service() on its own builds procd's JSON
-   description without ever submitting it over ubus, so nothing
-   is registered. start_service() already returns early without
-   opening an instance when globals.enabled is '0', so routing
-   both the "should be running" and "should not be running"
-   cases through "start" keeps the service registered with
-   procd (and its reload trigger intact) in both states, while
-   still ending up with zero running instances when disabled.
-
-procd_running() (lib/functions/procd.sh) is used to tell an
-already-running instance from a stopped one, so a plain config
-tweak on an already-running instance still takes the cheap
-SIGHUP path instead of a full restart.
-
-The reload_service() fix in the previous commit changes runtime
-behavior, so bump PKG_RELEASE from 3 to 4 to make sure users
-already running keepalived pick up the update.
+Enhance reload_service to check if keepalived is enabled before reloading.
 
 Signed-off-by: Jackie Han <jackie.han@gmail.com>
 ---
- net/keepalived/Makefile              |  2 +-
  net/keepalived/files/keepalived.init | 15 ++++++++++++---
- 2 files changed, 13 insertions(+), 4 deletions(-)
+ 1 file changed, 12 insertions(+), 3 deletions(-)
 
-diff --git a/net/keepalived/Makefile b/net/keepalived/Makefile
-index e5c52a8315580c..f6725dcca335cd 100644
---- a/net/keepalived/Makefile
-+++ b/net/keepalived/Makefile
-@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
- 
- PKG_NAME:=keepalived
- PKG_VERSION:=2.3.3
--PKG_RELEASE:=3
-+PKG_RELEASE:=4
- 
- PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
- PKG_SOURCE_URL:=https://www.keepalived.org/software
 diff --git a/net/keepalived/files/keepalived.init b/net/keepalived/files/keepalived.init
 index 91360e3b17809b..2df050fabb8fa1 100644
 --- a/net/keepalived/files/keepalived.init
