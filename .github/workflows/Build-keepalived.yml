@@ -83,8 +83,6 @@ jobs:
             --exclude='/LICENSE' \
             --exclude='/.upstream_meta' \
             --exclude='/.official_version_release' \
-            --exclude='/.official_version_snapshot' \
-            --exclude='/.official_channel' \
             ./ "feed/${PKG_NAME}/"
 
       - name: 🧮 Compute ARCH
