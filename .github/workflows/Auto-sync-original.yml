@@ -208,22 +208,41 @@ jobs:
             exit 0
           fi
 
+          DEPTH=$(echo "$UPSTREAM_PATH" | awk -F/ '{print NF}')
+          STRIPS="$((DEPTH + 1)) 1"
+
           for patch_file in $(printf '%s\n' "${PATCHES[@]}" | sort); do
             echo ""
             echo "🔎 Detecting the patch status: $patch_file ..."
-            if patch -p1 --dry-run -R --silent < "$patch_file" >/dev/null 2>&1; then
-              echo "⏭️ [Skip] Upstream already contains this patch."
-              continue
-            fi
 
-            if patch -p1 --dry-run --silent < "$patch_file" >/dev/null 2>&1; then
-              echo "🩹 Applying $patch_file ..."
-              patch --batch -p1 < "$patch_file"
-              echo "✅ $patch_file applied successfully!"
-            else
-              echo "❌ Critical Error: $patch_file is neither already applied nor cleanly appliable."
-              exit 1
-            fi
+            STATE=""
+            for P in $STRIPS; do
+              if patch -p"$P" --dry-run -R --silent < "$patch_file" >/dev/null 2>&1; then
+                STATE="applied"; break
+              fi
+              if patch -p"$P" --dry-run --silent < "$patch_file" >/dev/null 2>&1; then
+                STATE="apply"; STRIP="$P"; break
+              fi
+            done
+
+            case "$STATE" in
+              applied)
+                echo "⏭️ [Skip] Upstream already contains this patch."
+                ;;
+              apply)
+                echo "🩹 Applying $patch_file (-p$STRIP) ..."
+                patch --batch -p"$STRIP" < "$patch_file"
+                echo "✅ $patch_file applied successfully!"
+                ;;
+              *)
+                echo "❌ Critical Error: $patch_file is neither already applied nor cleanly appliable."
+                echo "---- dry-run diagnostics (-p$((DEPTH + 1))) ----"
+                patch -p"$((DEPTH + 1))" --dry-run < "$patch_file" || true
+                echo "---- files in working tree ----"
+                ls -la . files 2>/dev/null || true
+                exit 1
+                ;;
+            esac
           done
 
           chmod +x files/*.init files/*.sh 2>/dev/null || true
