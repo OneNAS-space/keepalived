@@ -214,11 +214,20 @@ jobs:
             echo "🧹 Cleaning old ${PKG_NAME} versions in $TDIR..."
             rm -f "$TDIR/${PKG_NAME}"-*.apk
 
-            for f in "$d"/*.apk; do
-              [ -f "$f" ] || continue
+            # upload-artifact 会保留通配符之前的目录结构
+            # (实际路径形如 <arch>/jackie264/keepalived-*.apk),因此要递归查找
+            COUNT=0
+            while IFS= read -r f; do
               echo "📥 Deploying $(basename "$f") -> $TDIR/"
               cp "$f" "$TDIR/"
-            done
+              COUNT=$((COUNT + 1))
+            done < <(find "$d" -type f -name '*.apk')
+
+            if [ "$COUNT" -eq 0 ]; then
+              echo "❌ No .apk found in $d"
+              find "$d" -type f
+              exit 1
+            fi
 
             git -C custom-packages add "${TDIR#custom-packages/}/"
           done
