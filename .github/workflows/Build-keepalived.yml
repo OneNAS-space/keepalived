@@ -17,9 +17,7 @@ on:
 env:
   PKG_NAME: keepalived
   FEEDNAME: jackie264
-  # 使用的 SDK 分支(仅 release)
   SDK_VERSION: openwrt-25.12
-  # custom-packages 仓库中的目录: releases/<RELEASE_DIR>/<arch>/packages
   RELEASE_DIR: packages-25.12
 
 jobs:
@@ -27,26 +25,43 @@ jobs:
     name: 1. Resolve Version
     runs-on: ubuntu-latest
     outputs:
+      pkg_version: ${{ steps.version.outputs.pkg_version }}
+      upstream_release: ${{ steps.version.outputs.upstream_release }}
+      pkg_release: ${{ steps.version.outputs.pkg_release }}
       tag_name: ${{ steps.version.outputs.tag_name }}
 
     steps:
       - name: 🧾 Checkout repo
         uses: actions/checkout@v7
 
-      - name: 🏷️ Read version from Makefile
+      - name: 🏷️ Resolve version (PKG_RELEASE always newer than official)
         id: version
         run: |
           set -euo pipefail
-          # PKG_VERSION / PKG_RELEASE 完全按 Makefile,不做任何修改。
+
           PKG_VERSION=$(sed -n 's/^PKG_VERSION:=//p' Makefile | head -n1 | tr -d '[:space:]')
-          PKG_RELEASE=$(sed -n 's/^PKG_RELEASE:=//p' Makefile | head -n1 | tr -d '[:space:]')
-          if [ -z "$PKG_VERSION" ] || [ -z "$PKG_RELEASE" ]; then
+          UPSTREAM_RELEASE=$(sed -n 's/^PKG_RELEASE:=//p' Makefile | head -n1 | tr -d '[:space:]')
+          if [ -z "$PKG_VERSION" ] || [ -z "$UPSTREAM_RELEASE" ]; then
             echo "❌ Cannot read PKG_VERSION/PKG_RELEASE from Makefile"; exit 1
           fi
 
+          BASE_TS=$(git log -1 --format=%ct)
+          PKG_RELEASE=$(( (BASE_TS - 1767225600) / 60 ))
+
+          if [[ "$UPSTREAM_RELEASE" =~ ^[0-9]+$ ]] && [ "$PKG_RELEASE" -le "$UPSTREAM_RELEASE" ]; then
+            echo "❌ Computed release r${PKG_RELEASE} is not newer than upstream r${UPSTREAM_RELEASE}"; exit 1
+          fi
+
           TAG="v${PKG_VERSION}-r${PKG_RELEASE}"
-          echo "🏷️ Version: ${PKG_VERSION}-r${PKG_RELEASE}"
-          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "🏷️ Official : ${PKG_VERSION}-r${UPSTREAM_RELEASE}"
+          echo "🏷️ Ours     : ${PKG_VERSION}-r${PKG_RELEASE}"
+
+          {
+            echo "pkg_version=$PKG_VERSION"
+            echo "upstream_release=$UPSTREAM_RELEASE"
+            echo "pkg_release=$PKG_RELEASE"
+            echo "tag_name=$TAG"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: 2. Build ${{ matrix.arch }}
@@ -56,7 +71,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 目标架构(与 Auto-sync-original.yml 中检查的架构保持一致)
         arch:
           - x86_64
           - aarch64_cortex-a53
@@ -71,8 +85,6 @@ jobs:
           set -e
           mkdir -p "feed/${PKG_NAME}"
 
-          # 注意:不能排除 patches/ —— 那是上游 keepalived 自带的补丁目录,构建必需。
-          # 只排除我们自己的 local-patches/ 以及仓库元数据文件。
           rsync -av \
             --exclude='/.git' \
             --exclude='/feed' \
@@ -84,6 +96,20 @@ jobs:
             --exclude='/.upstream_meta' \
             --exclude='/.official_version_release' \
             ./ "feed/${PKG_NAME}/"
+
+      - name: 🩹 Override PKG_RELEASE (build copy only, never committed)
+        run: |
+          set -euo pipefail
+          REL="${{ needs.check.outputs.pkg_release }}"
+          MF="feed/${PKG_NAME}/Makefile"
+
+          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${REL}/" "$MF"
+
+          if ! grep -qx "PKG_RELEASE:=${REL}" "$MF"; then
+            echo "❌ Failed to override PKG_RELEASE in $MF"; exit 1
+          fi
+          echo "✅ Build copy Makefile:"
+          grep -E '^PKG_(VERSION|RELEASE):=' "$MF"
 
       - name: 🧮 Compute ARCH
         run: echo "ARCH=${{ matrix.arch }}-${SDK_VERSION}" >> "$GITHUB_ENV"
@@ -102,7 +128,6 @@ jobs:
       - name: 📦 Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          # 命名约定: <pkg>__<arch>,部署阶段据此解析架构
           name: ${{ env.PKG_NAME }}__${{ matrix.arch }}
           path: bin/packages/*/${{ env.FEEDNAME }}/${{ env.PKG_NAME }}*.apk
           if-no-files-found: error
@@ -129,21 +154,19 @@ jobs:
         run: |
           set -e
           TAG="${{ needs.check.outputs.tag_name }}"
+          UPSTREAM_REL="${{ needs.check.outputs.upstream_release }}"
 
           for d in release-assets/${PKG_NAME}__*; do
             [ -d "$d" ] || continue
             arch="${d##*/}"
             arch="${arch#*__}"
 
-            # 最终路径: releases/packages-25.12/<arch>/packages
             TDIR="custom-packages/releases/${RELEASE_DIR}/${arch}/packages"
 
             mkdir -p "$TDIR"
             echo "🧹 Cleaning old ${PKG_NAME} versions in $TDIR..."
             rm -f "$TDIR/${PKG_NAME}"-*.apk
 
-            # upload-artifact 会保留通配符之前的目录结构
-            # (实际路径形如 <arch>/jackie264/keepalived-*.apk),因此要递归查找
             COUNT=0
             while IFS= read -r f; do
               echo "📥 Deploying $(basename "$f") -> $TDIR/"
@@ -169,7 +192,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update ${PKG_NAME} to ${TAG}"
+          git commit -m "Update ${PKG_NAME} to ${TAG} (official r${UPSTREAM_REL})"
           for i in {1..5}; do
             git pull --rebase origin main && \
             git push origin main && break || \
