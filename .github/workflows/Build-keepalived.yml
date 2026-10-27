@@ -18,7 +18,10 @@ env:
   PKG_NAME: keepalived
   FEEDNAME: jackie264
   # 目标架构(与 Auto-sync-original.yml 中检查的架构保持一致)
+  # release 通道的目标架构
   ARCHS: '["x86_64","aarch64_cortex-a53","arm_cortex-a7_neon-vfpv4"]'
+  # snapshot 通道只编译这些架构
+  SNAPSHOT_ARCHS: '["aarch64_cortex-a53"]'
   # release 通道对应的 SDK 分支 / snapshot 通道对应的 SDK 分支
   SDK_RELEASE: openwrt-25.12
   SDK_SNAPSHOT: master
@@ -86,13 +89,15 @@ jobs:
           # ---- 4. 生成矩阵: 架构 x 通道 ----
           MATRIX=$(jq -nc \
             --argjson archs "$ARCHS" \
+            --argjson snap_archs "$SNAPSHOT_ARCHS" \
             --argjson r "$BUILD_RELEASE" \
             --argjson s "$BUILD_SNAPSHOT" \
             --arg sdk_r "$SDK_RELEASE" \
             --arg sdk_s "$SDK_SNAPSHOT" \
-            '{include: [ $archs[] as $a
-               | (if $r then {arch:$a, channel:"release",  sdk:$sdk_r} else empty end),
-                 (if $s then {arch:$a, channel:"snapshot", sdk:$sdk_s} else empty end) ]}')
+            '{include: (
+               (if $r then [ $archs[]      | {arch:., channel:"release",  sdk:$sdk_r} ] else [] end)
+             + (if $s then [ $snap_archs[] | {arch:., channel:"snapshot", sdk:$sdk_s} ] else [] end)
+             )}')
 
           SHOULD_BUILD=$(echo "$MATRIX" | jq '.include | length > 0')
           echo "🧮 Matrix: $MATRIX"
