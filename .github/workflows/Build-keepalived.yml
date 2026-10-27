@@ -17,54 +17,26 @@ on:
 env:
   PKG_NAME: keepalived
   FEEDNAME: jackie264
-  # 目标架构(与 Auto-sync-original.yml 中检查的架构保持一致)
-  # release 通道的目标架构
-  ARCHS: '["x86_64","aarch64_cortex-a53","arm_cortex-a7_neon-vfpv4"]'
-  # snapshot 通道只编译这些架构
-  SNAPSHOT_ARCHS: '["aarch64_cortex-a53"]'
-  # release 通道对应的 SDK 分支 / snapshot 通道对应的 SDK 分支
-  SDK_RELEASE: openwrt-25.12
-  SDK_SNAPSHOT: master
-  # custom-packages 仓库中 release 通道的目录名
+  # 使用的 SDK 分支(仅 release)
+  SDK_VERSION: openwrt-25.12
+  # custom-packages 仓库中的目录: releases/<RELEASE_DIR>/<arch>/packages
   RELEASE_DIR: packages-25.12
 
 jobs:
   check:
-    name: 1. Resolve Version & Build Matrix
+    name: 1. Resolve Version
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.resolve.outputs.should_build }}
-      build_release: ${{ steps.resolve.outputs.build_release }}
-      build_snapshot: ${{ steps.resolve.outputs.build_snapshot }}
-      matrix: ${{ steps.resolve.outputs.matrix }}
-      channel: ${{ steps.resolve.outputs.channel }}
-      pkg_version: ${{ steps.resolve.outputs.pkg_version }}
-      pkg_release: ${{ steps.resolve.outputs.pkg_release }}
-      tag_name: ${{ steps.resolve.outputs.tag_name }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
 
     steps:
       - name: 🧾 Checkout repo
         uses: actions/checkout@v7
 
-      - name: 🔀 Resolve channel, version and build matrix
-        id: resolve
+      - name: 🏷️ Read version from Makefile
+        id: version
         run: |
           set -euo pipefail
-
-          # ---- 1. 通道 (snapshot / release / both) ----
-          if [ -f .official_channel ]; then
-            CH=$(tr -d '[:space:]' < .official_channel)
-          else
-            echo "⚠️ .official_channel not found, defaulting to 'both'."
-            CH="both"
-          fi
-          case "$CH" in
-            snapshot|release|both) ;;
-            *) echo "⚠️ Unexpected channel '$CH', defaulting to 'both'."; CH="both" ;;
-          esac
-          echo "📡 Detected channel: $CH"
-
-          # ---- 2. 版本号 ----
           # PKG_VERSION / PKG_RELEASE 完全按 Makefile,不做任何修改。
           PKG_VERSION=$(sed -n 's/^PKG_VERSION:=//p' Makefile | head -n1 | tr -d '[:space:]')
           PKG_RELEASE=$(sed -n 's/^PKG_RELEASE:=//p' Makefile | head -n1 | tr -d '[:space:]')
@@ -73,55 +45,22 @@ jobs:
           fi
 
           TAG="v${PKG_VERSION}-r${PKG_RELEASE}"
-          echo "🏷️ Version: ${PKG_VERSION}-r${PKG_RELEASE}  (tag: $TAG)"
-
-          # ---- 3. 决定要构建哪些通道 ----
-          BUILD_RELEASE=false
-          BUILD_SNAPSHOT=false
-
-          if [ "$CH" = "release" ] || [ "$CH" = "both" ]; then
-            BUILD_RELEASE=true
-          fi
-          if [ "$CH" = "snapshot" ] || [ "$CH" = "both" ]; then
-            BUILD_SNAPSHOT=true
-          fi
-
-          # ---- 4. 生成矩阵: 架构 x 通道 ----
-          MATRIX=$(jq -nc \
-            --argjson archs "$ARCHS" \
-            --argjson snap_archs "$SNAPSHOT_ARCHS" \
-            --argjson r "$BUILD_RELEASE" \
-            --argjson s "$BUILD_SNAPSHOT" \
-            --arg sdk_r "$SDK_RELEASE" \
-            --arg sdk_s "$SDK_SNAPSHOT" \
-            '{include: (
-               (if $r then [ $archs[]      | {arch:., channel:"release",  sdk:$sdk_r} ] else [] end)
-             + (if $s then [ $snap_archs[] | {arch:., channel:"snapshot", sdk:$sdk_s} ] else [] end)
-             )}')
-
-          SHOULD_BUILD=$(echo "$MATRIX" | jq '.include | length > 0')
-          echo "🧮 Matrix: $MATRIX"
-
-          {
-            echo "channel=$CH"
-            echo "pkg_version=$PKG_VERSION"
-            echo "pkg_release=$PKG_RELEASE"
-            echo "tag_name=$TAG"
-            echo "build_release=$BUILD_RELEASE"
-            echo "build_snapshot=$BUILD_SNAPSHOT"
-            echo "matrix=$MATRIX"
-            echo "should_build=$SHOULD_BUILD"
-          } >> "$GITHUB_OUTPUT"
+          echo "🏷️ Version: ${PKG_VERSION}-r${PKG_RELEASE}"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ matrix.channel }} / ${{ matrix.arch }}
+    name: 2. Build ${{ matrix.arch }}
     needs: check
-    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.check.outputs.matrix) }}
+      matrix:
+        # 目标架构(与 Auto-sync-original.yml 中检查的架构保持一致)
+        arch:
+          - x86_64
+          - aarch64_cortex-a53
+          - arm_cortex-a7_neon-vfpv4
 
     steps:
       - name: 🧾 Checkout repo
@@ -149,7 +88,7 @@ jobs:
             ./ "feed/${PKG_NAME}/"
 
       - name: 🧮 Compute ARCH
-        run: echo "ARCH=${{ matrix.arch }}-${{ matrix.sdk }}" >> "$GITHUB_ENV"
+        run: echo "ARCH=${{ matrix.arch }}-${SDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: 🏗️ Build with OpenWrt SDK
         uses: openwrt/gh-action-sdk@v11
@@ -165,15 +104,14 @@ jobs:
       - name: 📦 Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          # 命名约定: <pkg>__<arch>__<channel>,发布阶段会据此解析架构与通道
-          name: ${{ env.PKG_NAME }}__${{ matrix.arch }}__${{ matrix.channel }}
+          # 命名约定: <pkg>__<arch>,部署阶段据此解析架构
+          name: ${{ env.PKG_NAME }}__${{ matrix.arch }}
           path: bin/packages/*/${{ env.FEEDNAME }}/${{ env.PKG_NAME }}*.apk
           if-no-files-found: error
 
   deploy:
     name: 3. Deploy ${{ github.repository }}
     needs: [check, build]
-    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -193,22 +131,14 @@ jobs:
         run: |
           set -e
           TAG="${{ needs.check.outputs.tag_name }}"
-          CHANNELS=""
 
           for d in release-assets/${PKG_NAME}__*; do
             [ -d "$d" ] || continue
-            base=$(basename "$d")
-            rest="${base#*__}"
-            arch="${rest%%__*}"
-            channel="${rest##*__}"
+            arch="${d##*/}"
+            arch="${arch#*__}"
 
-            # 目录布局与官方保持一致: <channel根>/<arch>/packages
-            if [ "$channel" = "release" ]; then
-              TDIR="custom-packages/releases/${RELEASE_DIR}/${arch}/packages"
-            else
-              TDIR="custom-packages/snapshot/packages/${arch}/packages"
-            fi
-            CHANNELS="$CHANNELS $channel"
+            # 最终路径: releases/packages-25.12/<arch>/packages
+            TDIR="custom-packages/releases/${RELEASE_DIR}/${arch}/packages"
 
             mkdir -p "$TDIR"
             echo "🧹 Cleaning old ${PKG_NAME} versions in $TDIR..."
@@ -232,8 +162,6 @@ jobs:
             git -C custom-packages add "${TDIR#custom-packages/}/"
           done
 
-          CHANNELS=$(echo $CHANNELS | tr ' ' '\n' | sort -u | paste -sd, -)
-
           cd custom-packages
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -243,7 +171,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update ${PKG_NAME} to ${TAG} [${CHANNELS}]"
+          git commit -m "Update ${PKG_NAME} to ${TAG}"
           for i in {1..5}; do
             git pull --rebase origin main && \
             git push origin main && break || \
