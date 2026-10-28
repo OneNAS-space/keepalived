@@ -1,22 +1,17 @@
-Subject: [PATCH] keepalived-sync: do not restart/stop dnsmasq on state change
+From e8a4eaeddf7016419e328e466a2c4550699fc399 Mon Sep 17 00:00:00 2001
+From: Jackie Han <jackie.han@gmail.com>
+Date: Wed, 28 Oct 2026 09:19:41 +0800
+Subject: [PATCH] Simplify dnsmasq hotplug script
 
-The 551-dnsmasq hotplug script stops dnsmasq when the node becomes BACKUP
-(set_stop_if_backup) and restarts it on MASTER (set_restart_if_master).
-
-On OpenWrt dnsmasq also provides DNS, and the router's own resolv.conf points
-at it, so stopping it on a BACKUP node breaks name resolution for the node
-itself and for any client that uses that node as an alternate main router.
-
-Drop both actions so that 551-dnsmasq no longer touches the service on
-NOTIFY_MASTER/NOTIFY_BACKUP. The add_sync_file entries are kept, so the
-dhcp config and lease file stay on the sync whitelist. Whether DHCP is
-served on a given node is left to the user's own keepalived hooks.
-
+Removed unnecessary restart and stop conditions for dnsmasq.
 ---
-diff --git a/net/keepalived/files/etc/hotplug.d/keepalived/551-dnsmasq b/net/keepalived/files/etc/hotplug.d/keepalived/551-dnsmasq
+ files/etc/hotplug.d/keepalived/551-dnsmasq | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/files/etc/hotplug.d/keepalived/551-dnsmasq b/files/etc/hotplug.d/keepalived/551-dnsmasq
 index 8254521..4e41354 100644
---- a/net/keepalived/files/etc/hotplug.d/keepalived/551-dnsmasq
-+++ b/net/keepalived/files/etc/hotplug.d/keepalived/551-dnsmasq
+--- a/files/etc/hotplug.d/keepalived/551-dnsmasq
++++ b/files/etc/hotplug.d/keepalived/551-dnsmasq
 @@ -5,9 +5,6 @@
  
  set_service_name dnsmasq
@@ -26,3 +21,4 @@ index 8254521..4e41354 100644
 -
  add_sync_file /etc/config/dhcp
  add_sync_file /tmp/dhcp.leases
+ 
