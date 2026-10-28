@@ -82,6 +82,21 @@ define Package/keepalived/conffiles
 /etc/keepalived.user
 endef
 
+define Package/keepalived/postinst
+#!/bin/sh
+[ "$${IPKG_NO_SCRIPT}" = "1" ] && exit 0
+[ -s $${IPKG_INSTROOT}/lib/functions.sh ] || exit 0
+. $${IPKG_INSTROOT}/lib/functions.sh
+default_postinst $$0 $$@
+
+# Restart the daemon on install/upgrade. Otherwise the old process keeps running
+# the replaced (deleted) binary: 'pidof /usr/sbin/keepalived' no longer matches
+# it and the LuCI status page shows no instances until a manual restart.
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+/etc/init.d/keepalived enabled && /etc/init.d/keepalived restart
+exit 0
+endef
+
 CONFIGURE_ARGS+= \
 	--enable-json \
 	--enable-reproducible-build \
