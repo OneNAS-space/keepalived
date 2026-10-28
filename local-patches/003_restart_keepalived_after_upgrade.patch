@@ -1,0 +1,41 @@
+From 704bb8696460a6eb9355fa3e79c9b4675f4f01cf Mon Sep 17 00:00:00 2001
+From: Jackie Han <jackie.han@gmail.com>
+Date: Wed, 28 Oct 2026 13:00:58 +0800
+Subject: [PATCH] keepalived: restart the service after install/upgrade
+
+Add a postinst that restarts keepalived when the init script is enabled.
+After an upgrade the old process keeps running the replaced (deleted)
+binary, so 'pidof /usr/sbin/keepalived' used by the rpcd plugin no longer
+matches and LuCI shows 'There are no active instances' until a manual restart.
+---
+ Makefile | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/Makefile b/Makefile
+index 95e10df..197987a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -82,6 +82,21 @@ define Package/keepalived/conffiles
+ /etc/keepalived.user
+ endef
+ 
++define Package/keepalived/postinst
++#!/bin/sh
++[ "$${IPKG_NO_SCRIPT}" = "1" ] && exit 0
++[ -s $${IPKG_INSTROOT}/lib/functions.sh ] || exit 0
++. $${IPKG_INSTROOT}/lib/functions.sh
++default_postinst $$0 $$@
++
++# Restart the daemon on install/upgrade. Otherwise the old process keeps running
++# the replaced (deleted) binary: 'pidof /usr/sbin/keepalived' no longer matches
++# it and the LuCI status page shows no instances until a manual restart.
++[ -n "$${IPKG_INSTROOT}" ] && exit 0
++/etc/init.d/keepalived enabled && /etc/init.d/keepalived restart
++exit 0
++endef
++
+ CONFIGURE_ARGS+= \
+ 	--enable-json \
+ 	--enable-reproducible-build \
+-- 
+2.43.0
